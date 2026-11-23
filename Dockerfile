@@ -1,5 +1,8 @@
 FROM node:24-alpine
 
+# Atualiza os pacotes do sistema (corrige CVEs da imagem base apontadas pelo scan)
+RUN apk upgrade --no-cache
+
 WORKDIR /app
 
 COPY package*.json ./
