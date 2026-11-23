@@ -34,7 +34,17 @@ jobs:
           cache: npm
 
       - run: npm ci
-      - run: npm test
+
+      - name: Testes de API (CT-01 a CT-09) + cobertura mínima de 90%
+        run: |
+          echo '### 🧪 Testes automatizados' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          STATUS=0
+          npm run test:coverage > resultado.txt 2>&1 || STATUS=$?
+          cat resultado.txt
+          grep -E '^(✔|✖)|ℹ (tests|pass|fail) |%|----' resultado.txt >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          exit $STATUS
 
   # ---------------------------------------------------------------
   # 2) SCANS DE SEGURANÇA (rodam em paralelo com os testes)
@@ -122,6 +132,23 @@ jobs:
           push: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      # Smoke test: a imagem construída sobe e responde? (CT-10 e CT-11)
+      - name: Smoke test do container
+        run: |
+          IMAGEM=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          docker run -d --name smoke -p 3000:3000 $IMAGEM
+          for i in $(seq 1 20); do curl -fsS localhost:3000/health && break; sleep 1; done
+          echo
+          echo "CT-10: /health responde ok"
+          curl -fsS localhost:3000/health | grep '"status":"ok"'
+          echo "CT-10: cadastro e listagem funcionam no container"
+          curl -fsS -X POST localhost:3000/tarefas -H 'Content-Type: application/json' -d '{"titulo":"smoke"}'
+          curl -fsS localhost:3000/tarefas | grep '"smoke"'
+          echo "CT-11: container roda sem root"
+          test "$(docker exec smoke whoami)" = "node"
+          docker rm -f smoke
+          echo '### 💨 Smoke test do container: ✅ aprovado (CT-10, CT-11)' >> $GITHUB_STEP_SUMMARY
 
       # Scan de container: vulnerabilidades no sistema e nas libs da imagem
       - name: "Scan: imagem Docker (Grype) - relatório"

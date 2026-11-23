@@ -27,4 +27,18 @@ app.post("/tarefas", (req, res) => {
   res.status(201).json(tarefa);
 });
 
+// Rota inexistente
+app.use((req, res) => {
+  res.status(404).json({ erro: "Rota não encontrada" });
+});
+
+// Erros: responde em JSON sem expor detalhes internos (stack trace)
+app.use((err, req, res, next) => {
+  if (err.type === "entity.parse.failed") {
+    return res.status(400).json({ erro: "JSON inválido" });
+  }
+  console.error(err);
+  res.status(500).json({ erro: "Erro interno" });
+});
+
 module.exports = app;
