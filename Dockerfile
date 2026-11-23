@@ -1,4 +1,4 @@
-FROM node:24-alpine
+FROM node:26-alpine
 
 # Atualiza os pacotes do sistema (corrige CVEs da imagem base apontadas pelo scan)
 RUN apk upgrade --no-cache
