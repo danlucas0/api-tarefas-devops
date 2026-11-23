@@ -24,11 +24,38 @@ Git Push → GitHub Actions → Docker Build → GHCR → VPS → Nginx → API
 
 | Job | O que faz |
 |---|---|
-| **1. Validação e testes** | Instala as dependências (`npm ci`) e roda os testes automatizados (`npm test`) |
+| **1. Validação e testes + scans de segurança** | Instala as dependências (`npm ci`) e roda os testes automatizados (`npm test`) |
 | **2. Docker Build e push no GHCR** | Constrói a imagem com o `Dockerfile` e publica em `ghcr.io/danlucas0/api-tarefas-devops` (tags `latest` e o hash do commit) |
 | **3. Deploy na VPS** | Acessa a VPS por SSH, baixa a nova imagem, recria o container e testa o `/health` |
 
 Os jobs dependem um do outro: se os testes falharem, nada é publicado.
+
+## DevSecOps: scans automáticos de segurança
+
+A segurança faz parte do pipeline (*shift left*): toda alteração passa por 4 scans automáticos **antes** de virar imagem publicada. Se algum scan encontrar problema grave, o pipeline para e nada vai para produção.
+
+```
+git push ──┬── Testes ─────────────────────┐
+           ├── Scan de dependências (SCA) ─┤
+           ├── Scan de segredos ───────────┼──→ Build da imagem → Scan da imagem → Push GHCR → Deploy
+           └── Scan de código (SAST) ──────┘
+```
+
+| Scan | Ferramenta | O que procura | Bloqueia quando |
+|---|---|---|---|
+| **Dependências (SCA)** | `npm audit` | Bibliotecas do `package.json` com vulnerabilidades conhecidas (CVEs) | Vulnerabilidade **alta** ou **crítica** |
+| **Segredos** | Gitleaks | Senhas, tokens e chaves esquecidos no código e em **todo o histórico** do Git | Qualquer segredo encontrado |
+| **Código-fonte (SAST)** | CodeQL | Falhas no próprio código (injeção, XSS, path traversal…) | Alerta de segurança |
+| **Imagem Docker** | Grype | Vulnerabilidades no sistema operacional e nos pacotes da imagem | Falha **crítica** que já tenha correção |
+
+Outras medidas:
+
+- **Aba Security do GitHub:** resultados do CodeQL e do Grype são enviados no formato SARIF e ficam em *Security → Code scanning*.
+- **Resumo na execução:** o relatório do `npm audit` e do Grype aparece no resumo de cada execução em *Actions*.
+- **Scan agendado:** o pipeline também roda **toda segunda-feira**, porque novas vulnerabilidades são descobertas mesmo sem o código mudar.
+- **Dependabot** (`.github/dependabot.yml`): verifica toda semana dependências npm, imagem base do Docker e versões das actions, e abre Pull Requests de atualização.
+- **Cadeia de suprimentos:** actions de terceiros (Gitleaks e Grype) fixadas pelo **hash do commit**, e não pela tag, para evitar que uma tag adulterada injete código no pipeline.
+- **Imagem enxuta:** a imagem roda com usuário sem privilégios (`USER node`) e só com as dependências de produção (`npm ci --omit=dev`).
 
 O deploy só roda quando os secrets da VPS estão cadastrados em *Settings → Secrets and variables → Actions*:
 

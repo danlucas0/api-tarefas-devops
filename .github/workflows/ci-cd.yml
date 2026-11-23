@@ -1,80 +1,184 @@
-name: CI/CD - API de Tarefas
+name: CI/CD - API de Tarefas (DevSecOps)
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: "0 9 * * 1" # toda segunda-feira: novas falhas são descobertas todo dia
   workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
+  security-events: write # enviar resultados para a aba Security do GitHub
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  # 1) CI: instala dependências e roda os testes
+  # ---------------------------------------------------------------
+  # 1) CI: testes automatizados
+  # ---------------------------------------------------------------
   testes:
     name: Validação e testes
     runs-on: ubuntu-latest
     steps:
-      - name: Baixar o código
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - name: Configurar Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
 
-      - name: Instalar dependências
-        run: npm ci
+      - run: npm ci
+      - run: npm test
 
-      - name: Rodar testes
-        run: npm test
+  # ---------------------------------------------------------------
+  # 2) SCANS DE SEGURANÇA (rodam em paralelo com os testes)
+  # ---------------------------------------------------------------
 
-  # 2) Build da imagem Docker e publicação no GHCR
-  build-e-publicacao:
-    name: Docker Build e push no GHCR
-    needs: testes
-    if: github.event_name != 'pull_request'
+  # SCA: dependências com vulnerabilidades conhecidas (CVEs)
+  scan-dependencias:
+    name: "Scan: dependências (npm audit)"
     runs-on: ubuntu-latest
     steps:
-      - name: Baixar o código
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - name: Login no GitHub Container Registry
-        uses: docker/login-action@v3
+      - uses: actions/setup-node@v7
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          node-version: 24
+
+      - name: npm audit (falha com vulnerabilidade alta ou crítica)
+        run: |
+          set -o pipefail
+          echo '### 📦 Scan de dependências (npm audit)' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          STATUS=0
+          npm audit --audit-level=high 2>&1 | tee -a $GITHUB_STEP_SUMMARY || STATUS=$?
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          exit $STATUS
+
+  # Segredos: senhas, tokens e chaves esquecidos no código/histórico
+  scan-segredos:
+    name: "Scan: segredos (Gitleaks)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # analisa todo o histórico de commits
+
+      # Action de terceiros fixada pelo hash do commit (proteção da cadeia de suprimentos)
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # SAST: análise estática do código-fonte
+  scan-codigo:
+    name: "Scan: código-fonte (CodeQL)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: javascript-typescript
+          build-mode: none
+          queries: security-extended
+
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: sast
+
+  # ---------------------------------------------------------------
+  # 3) Build, scan da imagem e publicação no GHCR
+  #    Só acontece se testes E todos os scans passarem
+  # ---------------------------------------------------------------
+  build-e-publicacao:
+    name: Docker Build, scan da imagem e push no GHCR
+    needs: [testes, scan-dependencias, scan-segredos, scan-codigo]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
 
       - name: Gerar tags da imagem
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest
             type=sha
 
-      - name: Build e push da imagem
-        uses: docker/build-push-action@v6
+      - name: Build da imagem (ainda sem publicar)
+        uses: docker/build-push-action@v7
         with:
           context: .
-          push: true
+          load: true
+          push: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-  # 3) CD: atualiza a aplicação na VPS via SSH
-  # Só roda de verdade quando os secrets da VPS estiverem cadastrados
+      # Scan de container: vulnerabilidades no sistema e nas libs da imagem
+      - name: "Scan: imagem Docker (Grype) - relatório"
+        id: grype-sarif
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          fail-build: false
+          output-format: sarif
+          cache-db: true
+
+      - name: Enviar resultado para a aba Security
+        if: always() && steps.grype-sarif.outputs.sarif != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ${{ steps.grype-sarif.outputs.sarif }}
+          category: container
+
+      - name: "Scan: imagem Docker (Grype) - bloqueia se houver falha crítica corrigível"
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          severity-cutoff: critical
+          only-fixed: true
+          fail-build: true
+          output-format: table
+          output-file: grype.txt
+          cache-db: true
+
+      - name: Resumo do scan da imagem
+        if: always()
+        run: |
+          echo '### 🐳 Scan da imagem Docker (Grype)' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat grype.txt >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "sem relatório" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Login no GitHub Container Registry
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publicar imagem aprovada no GHCR
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        run: docker push --all-tags ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+  # ---------------------------------------------------------------
+  # 4) CD: atualiza a aplicação na VPS via SSH
+  #    Só roda de verdade quando os secrets da VPS estiverem cadastrados
+  # ---------------------------------------------------------------
   deploy:
     name: Deploy na VPS
     needs: build-e-publicacao
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     env:
       VPS_HOST: ${{ secrets.VPS_HOST }}
