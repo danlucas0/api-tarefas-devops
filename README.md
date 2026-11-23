@@ -20,6 +20,10 @@ Git Push → GitHub Actions → Docker Build → GHCR → VPS → Nginx → API
 | `GET` | `/tarefas` | Lista as tarefas cadastradas |
 | `POST` | `/tarefas` | Cadastra uma tarefa (`{ "titulo": "...", "descricao": "..." }`) |
 
+## Testes
+
+📋 **[Plano de Testes completo](PLANO_DE_TESTES.md)** ([PDF](docs/Plano_de_Testes_API_Tarefas.pdf)): estratégia, 18 casos de teste (API, smoke, segurança, pipeline e deploy), critérios de aceite, resultados e defeitos encontrados.
+
 ## Pipeline (`.github/workflows/ci-cd.yml`)
 
 | Job | O que faz |
