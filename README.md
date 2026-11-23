@@ -57,6 +57,26 @@ Outras medidas:
 - **Cadeia de suprimentos:** actions de terceiros (Gitleaks e Grype) fixadas pelo **hash do commit**, e não pela tag, para evitar que uma tag adulterada injete código no pipeline.
 - **Imagem enxuta:** a imagem roda com usuário sem privilégios (`USER node`) e só com as dependências de produção (`npm ci --omit=dev`).
 
+### O scan na prática: vulnerabilidade encontrada e corrigida
+
+Na primeira execução com os scans, o **Grype bloqueou o pipeline**: a imagem base `node:24-alpine` tinha uma vulnerabilidade **crítica** no `zlib` (CVE-2026-4738), além de falhas altas no OpenSSL (`libssl3`/`libcrypto3`) e em pacotes do npm que vem embutido na imagem (`undici`, `brace-expansion`). A imagem vulnerável **não foi publicada**.
+
+Correções aplicadas no `Dockerfile`:
+
+1. `apk upgrade --no-cache`: atualiza os pacotes do sistema da imagem (corrigiu `zlib` e OpenSSL).
+2. Remoção do npm/yarn da imagem final: eles só são usados no build. A API passou a iniciar direto com `node src/server.js`.
+
+Resultado depois da correção: **"No vulnerabilities found"** (nenhuma vulnerabilidade com correção disponível) e o pipeline seguiu até a publicação.
+
+| Execução | Resultado |
+|---|---|
+| Antes da correção | ❌ Bloqueado no scan da imagem (1 crítica + várias altas) |
+| Depois da correção | ✅ Todos os scans aprovados, imagem publicada no GHCR |
+
+O Dependabot também abriu sozinho um Pull Request propondo a imagem `node:26-alpine`, e esse PR passou pelos mesmos scans antes de poder ser aceito.
+
+## Deploy
+
 O deploy só roda quando os secrets da VPS estão cadastrados em *Settings → Secrets and variables → Actions*:
 
 | Secret | Conteúdo |
