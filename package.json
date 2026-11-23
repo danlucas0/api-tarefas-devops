@@ -1,0 +1,15 @@
+{
+  "name": "api-tarefas-devops",
+  "version": "1.0.0",
+  "description": "API de Tarefas com pipeline de CI/CD (GitHub Actions + Docker + GHCR)",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "author": "Daniel Lucas Andrade de Souza",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}
